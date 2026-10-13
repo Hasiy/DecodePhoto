@@ -20,8 +20,10 @@ import top.hasiy.rawviewer.hdr.HdrComparisonDecoder
 import top.hasiy.rawviewer.hdr.HdrComparisonError
 import top.hasiy.rawviewer.hdr.HdrComparisonImage
 import top.hasiy.rawviewer.hdr.HdrComparisonUiState
+import top.hasiy.rawviewer.raw.PhotoInputTooLargeException
 
-class HdrComparisonViewModel(application: Application) : AndroidViewModel(application) {
+class HdrComparisonViewModel @JvmOverloads constructor(application: Application,
+    sessionNamespace: String = "hdr_sessions") : AndroidViewModel(application) {
 
     private val decoder = HdrComparisonDecoder(application)
     private val mutableUiState = MutableStateFlow<HdrComparisonUiState>(HdrComparisonUiState.Empty)
@@ -29,10 +31,26 @@ class HdrComparisonViewModel(application: Application) : AndroidViewModel(applic
 
     private var decodeJob: Job? = null
     private var selectedUri: Uri? = null
+    private val sessionStore = PhotoSessionStore(application, sessionNamespace)
+    private var restoreRequested = false
+
+    /** Restores the last image once, only when the HDR destination becomes visible. */
+    fun onScreenOpened() {
+        if (restoreRequested) return
+        restoreRequested = true
+        viewModelScope.launch {
+            sessionStore.read().firstOrNull()?.let { if (selectedUri == null) onPhotoSelected(it.uri) }
+        }
+    }
 
     fun onPhotoSelected(uri: Uri) {
         selectedUri = uri
         decode(uri)
+        viewModelScope.launch {
+            try { sessionStore.remember(PhotoSession(uri, format = "HDR")) }
+            catch (error: CancellationException) { throw error }
+            catch (error: Exception) { Log.w(TAG, "HDR session save failed: ${error.javaClass.simpleName}") }
+        }
     }
 
     fun retry() {
@@ -41,8 +59,7 @@ class HdrComparisonViewModel(application: Application) : AndroidViewModel(applic
 
     /** Recycles a rendition only after Compose stopped displaying it and state no longer owns it. */
     fun onImageDisposed(image: HdrComparisonImage) {
-        val currentImage = (mutableUiState.value as? HdrComparisonUiState.Success)?.image
-        if (currentImage !== image) recycleImage(image)
+        // Published images remain valid while a Compose renderer or an export retains them.
     }
 
     private fun decode(uri: Uri) {
@@ -65,7 +82,11 @@ class HdrComparisonViewModel(application: Application) : AndroidViewModel(applic
                 mutableUiState.value = HdrComparisonUiState.Error(HdrComparisonError.OUT_OF_MEMORY)
             } catch (error: IOException) {
                 Log.e(TAG, "HDR comparison image is unsupported or damaged", error)
-                mutableUiState.value = HdrComparisonUiState.Error(HdrComparisonError.UNSUPPORTED_IMAGE)
+                mutableUiState.value = HdrComparisonUiState.Error(when {
+                    error is PhotoInputTooLargeException -> HdrComparisonError.INPUT_TOO_LARGE
+                    error.message.orEmpty().contains("dimensions", true) -> HdrComparisonError.DIMENSIONS_TOO_LARGE
+                    else -> HdrComparisonError.UNSUPPORTED_IMAGE
+                })
             } catch (error: RuntimeException) {
                 Log.e(TAG, "HDR comparison decode failed: ${error.javaClass.simpleName}", error)
                 mutableUiState.value = HdrComparisonUiState.Error(HdrComparisonError.UNKNOWN)
@@ -87,7 +108,6 @@ class HdrComparisonViewModel(application: Application) : AndroidViewModel(applic
 
     override fun onCleared() {
         decodeJob?.cancel()
-        releaseCurrentImage()
         super.onCleared()
     }
 

@@ -21,6 +21,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboard
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import android.content.ClipData
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -86,10 +95,21 @@ private val EXIF_SECTIONS = listOf(
 
 @Composable
 fun ExifDetailsScreen(uiState: RawViewerUiState, onNavigateBack: () -> Unit) {
+    val context = LocalContext.current
+    val operation = rememberPhotoOperation()
+    var query by rememberSaveable { mutableStateOf("") }
+    val jsonExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) operation.run { PhotoExporter.report(context, uri, uiState.metadata, true) }
+    }
+    val textExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) operation.run { PhotoExporter.report(context, uri, uiState.metadata, false) }
+    }
     var selectedSection by rememberSaveable { mutableIntStateOf(SUMMARY_PAGE) }
     val attributes = remember(uiState.metadata) { uiState.metadata.associate { it.tag to it.value } }
-    val displayedEntries = remember(uiState.metadata, selectedSection) {
-        if (selectedSection >= 0) {
+    val displayedEntries = remember(uiState.metadata, selectedSection, query) {
+        if (query.isNotBlank()) {
+            uiState.metadata.filter { it.tag.contains(query, true) || it.value.contains(query, true) }
+        } else if (selectedSection >= 0) {
             val tags = EXIF_SECTIONS[selectedSection].fields.map { it.tag }.toSet()
             uiState.metadata.filter { it.tag in tags }
         } else {
@@ -97,9 +117,12 @@ fun ExifDetailsScreen(uiState: RawViewerUiState, onNavigateBack: () -> Unit) {
         }
     }
     val navigateBack = {
-        if (selectedSection == SUMMARY_PAGE) onNavigateBack() else selectedSection = SUMMARY_PAGE
+        if (selectedSection == SUMMARY_PAGE && query.isBlank()) onNavigateBack()
+        else { selectedSection = SUMMARY_PAGE; query = "" }
     }
-    BackHandler(enabled = selectedSection != SUMMARY_PAGE) { selectedSection = SUMMARY_PAGE }
+    BackHandler(enabled = selectedSection != SUMMARY_PAGE || query.isNotBlank()) {
+        selectedSection = SUMMARY_PAGE; query = ""
+    }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -116,6 +139,17 @@ fun ExifDetailsScreen(uiState: RawViewerUiState, onNavigateBack: () -> Unit) {
                     style = MaterialTheme.typography.titleLarge,
                 )
             }
+            OutlinedTextField(query, { query = it }, label = { Text(stringResource(R.string.exif_search)) },
+                modifier = Modifier.fillMaxWidth(), singleLine = true)
+            Row {
+                TextButton(onClick = { jsonExport.launch("metadata.json") }, enabled = !operation.busy) {
+                    Text(stringResource(R.string.exif_export_json))
+                }
+                TextButton(onClick = { textExport.launch("metadata.txt") }, enabled = !operation.busy) {
+                    Text(stringResource(R.string.exif_export_text))
+                }
+            }
+            OperationStatus(operation)
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(0.dp),
@@ -131,7 +165,7 @@ fun ExifDetailsScreen(uiState: RawViewerUiState, onNavigateBack: () -> Unit) {
                     }
                 } else if (uiState.metadata.isEmpty()) {
                     item(key = "empty") { Text(stringResource(R.string.exif_empty)) }
-                } else if (selectedSection == SUMMARY_PAGE) {
+                } else if (selectedSection == SUMMARY_PAGE && query.isBlank()) {
                     EXIF_SECTIONS.forEachIndexed { index, section ->
                         item(key = section.title) {
                             ExifSectionContent(section, attributes) { selectedSection = index }
@@ -148,6 +182,7 @@ fun ExifDetailsScreen(uiState: RawViewerUiState, onNavigateBack: () -> Unit) {
                         }
                     }
                 } else {
+                    if (displayedEntries.isEmpty()) item("no-matches") { Text(stringResource(R.string.exif_no_matches)) }
                     item(key = "raw-count") {
                         Text(
                             stringResource(R.string.exif_title, displayedEntries.size),
@@ -222,6 +257,8 @@ private fun ExifSectionContent(
 
 @Composable
 private fun ExifTableRow(label: String, value: String) {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     SelectionContainer {
         Row(
             modifier = Modifier.fillMaxWidth()
@@ -238,6 +275,11 @@ private fun ExifTableRow(label: String, value: String) {
                 modifier = Modifier.weight(0.6f).padding(10.dp),
                 style = MaterialTheme.typography.bodySmall,
             )
+            TextButton(onClick = { scope.launch {
+                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText(label, "$label: $value")))
+            } }) {
+                Text(stringResource(R.string.exif_copy))
+            }
         }
     }
 }

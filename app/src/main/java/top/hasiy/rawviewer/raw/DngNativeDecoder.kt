@@ -42,9 +42,8 @@ class AndroidNativeImageDecoder(
         }
         if (directResult != null) return directResult
 
-        val cachedRaw = withContext(Dispatchers.IO) {
-            PhotoInputResolver.copyToCache(applicationContext, uri, format.suffix)
-        }
+        val input = PhotoInputResolver.acquire(applicationContext, uri, format.suffix)
+        val cachedRaw = input.file
         return try {
             withContext(Dispatchers.Default) {
                 ParcelFileDescriptor.open(cachedRaw, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->
@@ -54,7 +53,7 @@ class AndroidNativeImageDecoder(
                 }
             }
         } finally {
-            PhotoInputResolver.deleteQuietly(cachedRaw)
+            input.close()
         }
     }
 

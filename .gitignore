@@ -1,5 +1,6 @@
 # Gradle build output and local configuration
 .gradle/
+.kotlin/
 **/build/
 local.properties
 

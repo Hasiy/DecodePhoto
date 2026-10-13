@@ -38,6 +38,8 @@ data class HdrComparisonImage(
     val colorSpaceName: String,
     val bitmapConfigName: String,
     val gainmapMetadata: GainmapMetadata?,
+    val luminance: HdrLuminanceHistogram? = null,
+    val gainmapPreview: Bitmap? = null,
 )
 
 sealed interface HdrComparisonUiState {

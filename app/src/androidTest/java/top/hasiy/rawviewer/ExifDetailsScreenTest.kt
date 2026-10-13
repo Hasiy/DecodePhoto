@@ -33,14 +33,14 @@ class ExifDetailsScreenTest {
                 )
             }
         }
-        composeRule.onNodeWithText("OPPO").assertIsDisplayed()
+        composeRule.onNodeWithText("OPPO").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("查看全部标签（3 项）").performScrollTo().performClick()
-        composeRule.onNodeWithText("GPSLatitude").assertIsDisplayed()
-        composeRule.onNodeWithText("31/1,4/1,576539/10000").assertIsDisplayed()
-        composeRule.onNodeWithText("<xmp>original</xmp>").assertIsDisplayed()
+        composeRule.onNodeWithText("GPS GPSLatitude").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("31/1,4/1,576539/10000").performScrollTo().assertIsDisplayed()
+        composeRule.onNodeWithText("<xmp>original</xmp>").performScrollTo().assertIsDisplayed()
         composeRule.onNodeWithText("返回").performClick()
         composeRule.onNodeWithText("EXIF 信息").assertIsDisplayed()
-        composeRule.onNodeWithText("GPSLatitude").assertDoesNotExist()
+        composeRule.onNodeWithText("GPS GPSLatitude").assertDoesNotExist()
         composeRule.onNodeWithText("返回").performClick()
         composeRule.runOnIdle { assertTrue(returnedToViewer) }
     }

@@ -9,11 +9,20 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.ExternalResource
+import androidx.test.platform.app.InstrumentationRegistry
 
 class MainActivityTest {
 
-    @get:Rule
     val composeRule = createAndroidComposeRule<MainActivity>()
+    private val resetDestination = object : ExternalResource() {
+        override fun before() {
+            InstrumentationRegistry.getInstrumentation().targetContext
+                .getSharedPreferences("MainActivity", 0).edit().remove("destination").commit()
+        }
+    }
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(resetDestination).around(composeRule)
 
     @Test
     fun launch_showsSupportedPhotoFormats() {

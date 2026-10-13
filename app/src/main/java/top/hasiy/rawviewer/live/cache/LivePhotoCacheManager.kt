@@ -93,9 +93,7 @@ class LivePhotoCacheManager(context: Context) : Closeable {
     fun release(file: File?) {
         if (file == null) return
         synchronized(managedFiles) { managedFiles.remove(file) }
-        if (file.exists() && !file.delete()) {
-            Log.w(TAG, "Unable to delete a private Live Photo cache file")
-        }
+        LiveVideoFiles.release(file)
     }
 
     override fun close() {
@@ -103,14 +101,13 @@ class LivePhotoCacheManager(context: Context) : Closeable {
             managedFiles.toList().also { managedFiles.clear() }
         }
         files.forEach { file ->
-            if (file.exists() && !file.delete()) {
-                Log.w(TAG, "Unable to delete a private Live Photo cache file")
-            }
+            LiveVideoFiles.release(file)
         }
     }
 
     private fun createManagedFile(suffix: String): File {
         val file = File.createTempFile(CACHE_FILE_PREFIX, suffix, cacheDirectory)
+        LiveVideoFiles.register(file)
         synchronized(managedFiles) { managedFiles += file }
         return file
     }

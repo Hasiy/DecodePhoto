@@ -5,6 +5,8 @@ package top.hasiy.rawviewer.live.parser
 
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.media.MediaCodecList
+import android.util.Log
 import top.hasiy.rawviewer.live.model.LiveVideoMetadata
 import java.io.File
 import java.io.IOException
@@ -20,6 +22,8 @@ object LiveVideoInspector {
             var height = 0
             var durationUs = 0L
             var hasAudio = false
+            var transfer = "SDR/UNKNOWN"
+            var decoderSupported = false
             for (trackIndex in 0 until extractor.trackCount) {
                 val format = extractor.getTrackFormat(trackIndex)
                 val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
@@ -29,6 +33,17 @@ object LiveVideoInspector {
                         width = format.getIntegerOrZero(MediaFormat.KEY_WIDTH)
                         height = format.getIntegerOrZero(MediaFormat.KEY_HEIGHT)
                         durationUs = format.getLongOrZero(MediaFormat.KEY_DURATION)
+                        transfer = when (format.getIntegerOrZero(MediaFormat.KEY_COLOR_TRANSFER)) {
+                            MediaFormat.COLOR_TRANSFER_ST2084 -> "PQ"
+                            MediaFormat.COLOR_TRANSFER_HLG -> "HLG"
+                            else -> "SDR/UNKNOWN"
+                        }
+                        decoderSupported = try {
+                            MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format) != null
+                        } catch (error: Exception) {
+                            Log.w("LiveVideoInspector", "Capability probe failed: ${error.javaClass.simpleName}")
+                            false
+                        }
                     }
                     mime.startsWith(AUDIO_MIME_PREFIX) -> hasAudio = true
                 }
@@ -46,6 +61,8 @@ object LiveVideoInspector {
                 height = height,
                 durationUs = durationUs,
                 hasAudio = hasAudio,
+                colorTransfer = transfer,
+                decoderSupportsFormat = decoderSupported,
             )
         } finally {
             extractor.release()

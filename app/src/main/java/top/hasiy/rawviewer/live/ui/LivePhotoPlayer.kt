@@ -23,6 +23,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import top.hasiy.rawviewer.R
 import java.io.File
+import top.hasiy.rawviewer.live.cache.LiveVideoFiles
 
 @Composable
 fun LivePhotoPlayer(
@@ -36,6 +37,7 @@ fun LivePhotoPlayer(
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnPlaybackEnded by rememberUpdatedState(onPlaybackEnded)
     val currentOnPlaybackError by rememberUpdatedState(onPlaybackError)
+    val videoLease = remember(videoFile.absolutePath) { LiveVideoFiles.retain(videoFile) }
     val player = remember(videoFile.absolutePath) {
         ExoPlayer.Builder(context).build().apply {
             repeatMode = Player.REPEAT_MODE_OFF
@@ -72,6 +74,7 @@ fun LivePhotoPlayer(
             lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
             player.removeListener(listener)
             player.release()
+            videoLease.close()
         }
     }
 

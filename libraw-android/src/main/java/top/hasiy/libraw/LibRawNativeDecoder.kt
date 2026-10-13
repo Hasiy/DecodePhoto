@@ -41,10 +41,15 @@ class LibRawNativeDecoder {
         file: File,
         halfSize: Boolean,
         requestId: Long,
+        maxLongEdge: Int = 4096,
+        exposureEv: Float = 0f,
+        whiteBalance: Int = 0,
     ): Bitmap {
         require(file.isFile) { "RAW input must be a readable local file" }
         require(requestId > 0L) { "requestId must be greater than 0" }
-        return nativeDecodeFile(file.absolutePath, halfSize, requestId)
+        require(maxLongEdge > 0 && exposureEv.isFinite() && exposureEv in -3f..3f)
+        require(whiteBalance in 0..2)
+        return nativeDecodeFile(file.absolutePath, halfSize, requestId, maxLongEdge, exposureEv, whiteBalance)
             ?: throw LibRawException("LibRaw returned no image")
     }
 
@@ -56,6 +61,9 @@ class LibRawNativeDecoder {
         path: String,
         halfSize: Boolean,
         requestId: Long,
+        maxLongEdge: Int,
+        exposureEv: Float,
+        whiteBalance: Int,
     ): Bitmap?
 
     companion object {

@@ -7,6 +7,8 @@ import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import top.hasiy.libheif.HeifDynamicRange
 import top.hasiy.libheif.LibHeifContainerInfo
 import top.hasiy.libheif.LibHeifNativeDecoder
@@ -17,29 +19,34 @@ class LibHeifDecoder(private val applicationContext: Context) {
     /** Reads HEIF container metadata from a private seekable copy of the selected document. */
     suspend fun inspect(uri: Uri, format: PhotoFormat): LibHeifContainerInfo {
         require(format.isHeif) { "libheif inspection only accepts HEIF/HEIC formats" }
-        val cached = withContext(Dispatchers.IO) {
-            PhotoInputResolver.copyToCache(applicationContext, uri, format.suffix)
-        }
+        val input = PhotoInputResolver.acquire(applicationContext, uri, format.suffix)
+        val cached = input.file
         return try {
             withContext(Dispatchers.Default) { nativeDecoder.inspect(cached) }
         } finally {
-            PhotoInputResolver.deleteQuietly(cached)
+            input.close()
         }
     }
 
     suspend fun decode(
         uri: Uri,
         format: PhotoFormat,
-        maxLongEdge: Int = DEFAULT_MAX_LONG_EDGE,
+        maxLongEdge: Int = PhotoMemoryPolicy.previewLongEdge(applicationContext),
+        forceSdr: Boolean = false,
     ): PhotoDecodeOutput {
         require(format.isHeif) { "libheif only accepts HEIF/HEIC formats" }
         require(maxLongEdge > 0) { "maxLongEdge must be greater than 0" }
-        val cached = withContext(Dispatchers.IO) {
-            PhotoInputResolver.copyToCache(applicationContext, uri, format.suffix)
-        }
+        val input = PhotoInputResolver.acquire(applicationContext, uri, format.suffix)
+        val cached = input.file
+        var owned: android.graphics.Bitmap? = null
         return try {
             withContext(Dispatchers.Default) {
-                val decoded = nativeDecoder.decode(cached, maxLongEdge)
+                val workerContext = currentCoroutineContext()
+                val decoded = NativeDecodeBudget.run {
+                    workerContext.ensureActive()
+                    nativeDecoder.decode(cached, maxLongEdge, forceSdr) { workerContext.ensureActive() }
+                }
+                owned = decoded.bitmap
                 val dynamicRange = when (decoded.sourceInfo.dynamicRange) {
                     HeifDynamicRange.SDR -> PhotoDynamicRange.SDR
                     HeifDynamicRange.HLG -> PhotoDynamicRange.HLG
@@ -57,8 +64,11 @@ class LibHeifDecoder(private val applicationContext: Context) {
                     ),
                 )
             }
+        } catch (error: Throwable) {
+            owned?.recycle()
+            throw error
         } finally {
-            PhotoInputResolver.deleteQuietly(cached)
+            input.close()
         }
     }
 

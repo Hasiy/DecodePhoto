@@ -15,6 +15,9 @@
 
 ## 1.1 当前实现状态
 
+2026-10-13 增加视频容器提取、可选时间点 JPEG 关键帧保存、传递函数和系统解码能力探测，
+并以文件引用租约保护播放/导出生命周期。详见[查看器增强及验证](photo-viewer-enhancements.md)。
+
 已实现：
 
 - Android Motion Photo 1.0 Container XMP 解析。

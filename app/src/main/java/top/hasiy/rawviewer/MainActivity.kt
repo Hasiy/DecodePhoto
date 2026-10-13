@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -69,17 +71,30 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: RawViewerViewModel by viewModels()
     private val hdrComparisonViewModel: HdrComparisonViewModel by viewModels()
+    private val comparisonViewModel: DecodeComparisonViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             RawViewerTheme {
-                var destination by rememberSaveable { mutableStateOf(AppDestination.PHOTO_VIEWER) }
+                var destination by rememberSaveable { mutableStateOf(
+                    runCatching { AppDestination.valueOf(getPreferences(MODE_PRIVATE)
+                        .getString("destination", AppDestination.PHOTO_VIEWER.name)!!) }
+                        .getOrDefault(AppDestination.PHOTO_VIEWER)) }
+                LaunchedEffect(destination) {
+                    getPreferences(MODE_PRIVATE).edit().putString("destination", destination.name).apply()
+                }
                 var exifBackDestination by rememberSaveable {
                     mutableStateOf(AppDestination.PHOTO_VIEWER)
                 }
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-                val hdrComparisonUiState by hdrComparisonViewModel.uiState.collectAsStateWithLifecycle()
+                val comparisonState by comparisonViewModel.uiState.collectAsStateWithLifecycle()
+                val liveHdr = (uiState.liveContent as? LiveContentState.Ready)?.asset?.videoMetadata?.let {
+                    uiState.isLivePlaying && it.decoderSupportsFormat && it.colorTransfer in listOf("PQ", "HLG")
+                } == true
+                val mainHdrReady = (destination == AppDestination.PHOTO_VIEWER || destination == AppDestination.FULLSCREEN) &&
+                    ((uiState.content as? RawContentState.Success)?.colorInfo?.isHdrDisplayReady == true || liveHdr)
+                if (destination != AppDestination.HDR_COMPARISON) ApplyViewerHdrWindowMode(window, mainHdrReady)
                 val filePicker = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri ->
@@ -117,6 +132,10 @@ class MainActivity : ComponentActivity() {
                             destination = AppDestination.EXIF_DETAILS
                         },
                         onOpenHeifDetails = { destination = AppDestination.HEIF_DETAILS },
+                        onOpenFullscreen = { destination = AppDestination.FULLSCREEN },
+                        onOpenCompare = { destination = AppDestination.DECODE_COMPARISON },
+                        onOpenRecent = { destination = AppDestination.RECENT },
+                        onRawOptions = viewModel::onRawOptionsChanged,
                         onDecode = viewModel::onDecodeRequested,
                         onCancel = viewModel::onCancelClick,
                         onPlayLive = viewModel::onPlayLiveClick,
@@ -125,6 +144,22 @@ class MainActivity : ComponentActivity() {
                         onLivePlaybackError = viewModel::onLivePlaybackError,
                         onBitmapDisposed = viewModel::onBitmapDisposed,
                     )
+                    AppDestination.FULLSCREEN -> {
+                        BackHandler { destination = AppDestination.PHOTO_VIEWER }
+                        FullscreenPhotoScreen(uiState.content) { destination = AppDestination.PHOTO_VIEWER }
+                    }
+                    AppDestination.DECODE_COMPARISON -> {
+                        BackHandler { comparisonViewModel.clear(); destination = AppDestination.PHOTO_VIEWER }
+                        DecodeComparisonScreen(uiState.format, comparisonState,
+                            { a, b -> viewModel.compareWith(comparisonViewModel, a, b) },
+                            { comparisonViewModel.clear(); destination = AppDestination.PHOTO_VIEWER })
+                    }
+                    AppDestination.RECENT -> {
+                        BackHandler { destination = AppDestination.PHOTO_VIEWER }
+                        RecentPhotosScreen(uiState.recentSessions,
+                            { viewModel.onRecentSelected(it); destination = AppDestination.PHOTO_VIEWER },
+                            viewModel::onClearRecent, { destination = AppDestination.PHOTO_VIEWER })
+                    }
                     AppDestination.COLOR_CONVERTER -> {
                         BackHandler { destination = AppDestination.PHOTO_VIEWER }
                         ColorConverterScreen(
@@ -150,6 +185,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     AppDestination.HDR_COMPARISON -> {
+                        val hdrComparisonUiState by hdrComparisonViewModel.uiState.collectAsStateWithLifecycle()
+                        LaunchedEffect(hdrComparisonViewModel) { hdrComparisonViewModel.onScreenOpened() }
                         BackHandler { destination = AppDestination.PHOTO_VIEWER }
                         HdrComparisonScreen(
                             uiState = hdrComparisonUiState,
@@ -209,6 +246,9 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class AppDestination {
+    FULLSCREEN,
+    DECODE_COMPARISON,
+    RECENT,
     PHOTO_VIEWER,
     COLOR_CONVERTER,
     HDR_COMPARISON,
@@ -218,7 +258,11 @@ private enum class AppDestination {
 
 @Composable
 private fun RawViewerTheme(content: @Composable () -> Unit) {
-    MaterialTheme(content = content)
+    MaterialTheme {
+        Surface(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding()) { content() }
+        }
+    }
 }
 
 @Composable
@@ -230,6 +274,10 @@ private fun RawViewerScreen(
     onOpenHdrComparison: () -> Unit,
     onOpenExif: () -> Unit,
     onOpenHeifDetails: () -> Unit,
+    onOpenFullscreen: () -> Unit,
+    onOpenCompare: () -> Unit,
+    onOpenRecent: () -> Unit,
+    onRawOptions: (top.hasiy.rawviewer.raw.RawRenderOptions) -> Unit,
     onDecode: (DecodeMode) -> Unit,
     onCancel: () -> Unit,
     onPlayLive: () -> Unit,
@@ -242,7 +290,6 @@ private fun RawViewerScreen(
     val hdrDisplayReady = (uiState.content as? RawContentState.Success)
         ?.colorInfo
         ?.isHdrDisplayReady == true
-    ApplyViewerHdrWindowMode(window, hdrDisplayReady)
     val liveMetadata = (uiState.liveContent as? LiveContentState.Ready)?.asset
         ?.let { asset -> liveMetadataRows(asset) }
         .orEmpty()
@@ -287,6 +334,22 @@ private fun RawViewerScreen(
                     OutlinedButton(onClick = onSelectAppleLive, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.select_apple_live_photo))
                     }
+                    OutlinedButton(onClick = onOpenRecent, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.recent_title))
+                    }
+                }
+            }
+            item(key = "content") {
+                DecodeContent(content = uiState.content, uiState = uiState, onCancel = onCancel,
+                    onLivePlaybackEnded = onStopLive, onLivePlaybackError = onLivePlaybackError,
+                    onBitmapDisposed = onBitmapDisposed)
+            }
+            if (uiState.content is RawContentState.Success) item("photo-tools") {
+                OutlinedButton(onClick = onOpenFullscreen, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.open_fullscreen))
+                }
+                OutlinedButton(onClick = onOpenCompare, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.open_compare))
                 }
             }
             uiState.format?.let { format ->
@@ -330,15 +393,14 @@ private fun RawViewerScreen(
                     )
                 }
             }
-            item(key = "content") {
-                DecodeContent(
-                    content = uiState.content,
-                    uiState = uiState,
-                    onCancel = onCancel,
-                    onLivePlaybackEnded = onStopLive,
-                    onLivePlaybackError = onLivePlaybackError,
-                    onBitmapDisposed = onBitmapDisposed,
-                )
+            if (uiState.content is RawContentState.Error) item("retry") {
+                Button(onClick = { onDecode(DecodeMode.AUTO) }) { Text(stringResource(R.string.photo_retry)) }
+            }
+            if (uiState.content is RawContentState.Success) {
+                item("export") { PhotoExportControls(uiState) }
+            }
+            if (uiState.format?.isRaw == true) item("raw-options") {
+                RawRenderControls(uiState.rawOptions, onRawOptions)
             }
             item(key = "live-section") {
                 LivePhotoSection(
@@ -348,6 +410,7 @@ private fun RawViewerScreen(
                     onToggleLiveMute = onToggleLiveMute,
                 )
             }
+            item("live-export") { LiveExportControls(uiState) }
             if (liveMetadata.isNotEmpty()) {
                 item(key = "live-metadata-title") {
                     Text(
@@ -532,7 +595,7 @@ private fun SuccessContent(
             ),
             style = MaterialTheme.typography.labelLarge,
         )
-        DecodedColorInfoCard(content)
+        content.warningRes?.let { Text(stringResource(it), color = MaterialTheme.colorScheme.error) }
         val liveAsset = (uiState.liveContent as? LiveContentState.Ready)?.asset
         if (uiState.isLivePlaying && liveAsset != null) {
             LivePhotoPlayer(
@@ -562,6 +625,7 @@ private fun SuccessContent(
                 contentScale = ContentScale.Fit,
             )
         }
+        DecodedColorInfoCard(content)
         content.histogram?.let { histogram ->
             RgbHistogramChart(
                 histogram = histogram,
@@ -770,7 +834,8 @@ private fun sourceLabel(source: RawDecodeResult.Source): String = when (source) 
 private fun ApplyViewerHdrWindowMode(window: Window?, hdrDisplayReady: Boolean) {
     DisposableEffect(window, hdrDisplayReady) {
         window?.colorMode = if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && hdrDisplayReady
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && hdrDisplayReady &&
+                window?.decorView?.display?.isHdr == true
         ) {
             ActivityInfo.COLOR_MODE_HDR
         } else {

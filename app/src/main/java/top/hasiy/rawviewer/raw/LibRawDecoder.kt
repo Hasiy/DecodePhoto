@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import top.hasiy.libraw.LibRawNativeDecoder
+import android.util.Log
 
 class LibRawDecoder(
     private val applicationContext: Context,
@@ -26,7 +27,6 @@ class LibRawDecoder(
     private val decodeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "libraw-decoder")
     }
-    private val nextRequestId = AtomicLong(1L)
     private val activeRequestIds = ConcurrentHashMap.newKeySet<Long>()
 
     /**
@@ -41,49 +41,50 @@ class LibRawDecoder(
     suspend fun decode(
         uri: Uri,
         format: PhotoFormat,
-        halfSize: Boolean = true,
-        maxLongEdge: Int = DEFAULT_MAX_LONG_EDGE,
+        options: RawRenderOptions = RawRenderOptions(),
+        maxLongEdge: Int = PhotoMemoryPolicy.previewLongEdge(applicationContext),
     ): Bitmap {
         require(maxLongEdge > 0) { "maxLongEdge must be greater than 0" }
         require(format.isRaw) { "LibRaw only accepts RAW formats" }
-        val cachedRaw = withContext(Dispatchers.IO) {
-            PhotoInputResolver.copyToCache(applicationContext, uri, format.suffix)
-        }
-        return try {
-            val bitmap = decodeCachedFile(cachedRaw.absolutePath, halfSize)
-            resizeIfNeeded(bitmap, maxLongEdge)
-        } finally {
-            PhotoInputResolver.deleteQuietly(cachedRaw)
-        }
+        val input = PhotoInputResolver.acquire(applicationContext, uri, format.suffix)
+        return decodeCachedFile(input, options, maxLongEdge)
     }
 
     override fun close() {
         activeRequestIds.forEach(nativeDecoder::cancel)
-        decodeExecutor.shutdownNow()
+        decodeExecutor.shutdown()
     }
 
     private suspend fun decodeCachedFile(
-        path: String,
-        halfSize: Boolean,
+        input: PhotoInputResolver.Lease,
+        options: RawRenderOptions,
+        maxLongEdge: Int,
     ): Bitmap = suspendCancellableCoroutine { continuation ->
-        val requestId = nextRequestId.getAndIncrement()
+        val requestId = NEXT_REQUEST_ID.getAndIncrement()
         activeRequestIds += requestId
-        nativeDecoder.prepareRequest(requestId)
+        try { nativeDecoder.prepareRequest(requestId) }
+        catch (error: Throwable) { input.close(); activeRequestIds -= requestId; throw error }
         continuation.invokeOnCancellation { nativeDecoder.cancel(requestId) }
 
-        decodeExecutor.execute {
+        try { decodeExecutor.execute {
             try {
-                val bitmap = nativeDecoder.decode(File(path), halfSize, requestId)
-                if (continuation.isActive) {
-                    continuation.resume(bitmap)
-                } else {
-                    bitmap.recycle()
+                val bitmap = NativeDecodeBudget.run {
+                    nativeDecoder.decode(input.file, options.halfSize, requestId,
+                        maxLongEdge, options.exposureEv, options.whiteBalance.ordinal)
                 }
+                continuation.resume(bitmap, onCancellation = { _, value, _ -> value.recycle() })
             } catch (error: Throwable) {
+                Log.w("LibRawDecoder", "RAW worker failed: ${error.javaClass.simpleName}")
                 if (continuation.isActive) continuation.resumeWithException(error)
             } finally {
+                input.close()
                 activeRequestIds -= requestId
             }
+        } } catch (error: Exception) {
+            Log.w("LibRawDecoder", "RAW scheduling failed: ${error.javaClass.simpleName}")
+            input.close()
+            activeRequestIds -= requestId
+            continuation.resumeWithException(error)
         }
     }
 
@@ -109,5 +110,6 @@ class LibRawDecoder(
 
     private companion object {
         const val DEFAULT_MAX_LONG_EDGE = 4096
+        val NEXT_REQUEST_ID = AtomicLong(1L)
     }
 }

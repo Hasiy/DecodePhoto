@@ -11,6 +11,8 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -149,9 +151,17 @@ Java_top_hasiy_libraw_LibRawNativeDecoder_nativeDecodeFile(
     jobject,
     jstring path,
     jboolean halfSize,
-    jlong requestId
+    jlong requestId,
+    jint maxLongEdge,
+    jfloat exposureEv,
+    jint whiteBalance
 ) {
     RequestScope request(requestId);
+    if (maxLongEdge <= 0 || !std::isfinite(exposureEv) || exposureEv < -3 || exposureEv > 3 ||
+        whiteBalance < 0 || whiteBalance > 2) {
+        throwRawNativeException(env, "Invalid RAW render options");
+        return nullptr;
+    }
     if (request.isCancelled()) {
         throwRawNativeException(env, "RAW decoding was cancelled");
         return nullptr;
@@ -162,7 +172,9 @@ Java_top_hasiy_libraw_LibRawNativeDecoder_nativeDecodeFile(
 
     LibRaw processor;
     processor.set_progress_handler(progressCallback, request.flag.get());
-    processor.imgdata.params.use_camera_wb = 1;
+    processor.imgdata.params.use_camera_wb = whiteBalance == 0 ? 1 : 0;
+    processor.imgdata.params.use_auto_wb = whiteBalance == 1 ? 1 : 0;
+    processor.imgdata.params.bright = std::pow(2.0f, exposureEv);
     processor.imgdata.params.output_color = 1;
     processor.imgdata.params.output_bps = 8;
     processor.imgdata.params.half_size = halfSize == JNI_TRUE ? 1 : 0;
@@ -221,10 +233,14 @@ Java_top_hasiy_libraw_LibRawNativeDecoder_nativeDecodeFile(
         return nullptr;
     }
 
+    const double scale = std::min(1.0, static_cast<double>(maxLongEdge) /
+        std::max(processed.image->width, processed.image->height));
+    const int targetWidth = std::max(1, static_cast<int>(processed.image->width * scale));
+    const int targetHeight = std::max(1, static_cast<int>(processed.image->height * scale));
     jobject bitmap = createArgb8888Bitmap(
         env,
-        static_cast<int>(processed.image->width),
-        static_cast<int>(processed.image->height)
+        targetWidth,
+        targetHeight
     );
     if (bitmap == nullptr || env->ExceptionCheck()) return nullptr;
 
@@ -243,22 +259,28 @@ Java_top_hasiy_libraw_LibRawNativeDecoder_nativeDecodeFile(
     }
 
     auto* destination = static_cast<std::uint8_t*>(pixelBuffer);
-    for (unsigned int y = 0; y < processed.image->height; ++y) {
+    for (int y = 0; y < targetHeight; ++y) {
         if (request.isCancelled()) {
             AndroidBitmap_unlockPixels(env, bitmap);
             throwRawNativeException(env, "RAW decoding was cancelled");
             return nullptr;
         }
-        const std::uint8_t* sourceRow =
-            processed.image->data + y * static_cast<size_t>(sourceStride);
         std::uint8_t* targetRow = destination + y * bitmapInfo.stride;
-
-        for (unsigned int x = 0; x < processed.image->width; ++x) {
-            const std::uint8_t* sourcePixel = sourceRow + x * processed.image->colors;
+        const int y0 = y * processed.image->height / targetHeight;
+        const int y1 = std::max(y0 + 1, (y + 1) * processed.image->height / targetHeight);
+        for (int x = 0; x < targetWidth; ++x) {
+            const int x0 = x * processed.image->width / targetWidth;
+            const int x1 = std::max(x0 + 1, (x + 1) * processed.image->width / targetWidth);
+            std::uint64_t sums[3] = {0, 0, 0};
+            for (int sy = y0; sy < y1; ++sy) {
+                const auto* row = processed.image->data + static_cast<size_t>(sy) * sourceStride;
+                for (int sx = x0; sx < x1; ++sx) {
+                    for (int c = 0; c < 3; ++c) sums[c] += row[sx * processed.image->colors + c];
+                }
+            }
+            const auto count = static_cast<std::uint64_t>((y1 - y0) * (x1 - x0));
             std::uint8_t* targetPixel = targetRow + x * 4U;
-            targetPixel[0] = sourcePixel[0];
-            targetPixel[1] = sourcePixel[1];
-            targetPixel[2] = sourcePixel[2];
+            for (int c = 0; c < 3; ++c) targetPixel[c] = static_cast<std::uint8_t>(sums[c] / count);
             targetPixel[3] = 255;
         }
     }

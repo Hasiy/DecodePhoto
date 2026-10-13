@@ -10,6 +10,7 @@ import android.os.Build
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.function.DoubleUnaryOperator
 
 enum class HeifDynamicRange {
     SDR,
@@ -156,15 +157,20 @@ class LibHeifNativeDecoder {
     fun decode(
         file: File,
         maxLongEdge: Int = DEFAULT_MAX_LONG_EDGE,
+        forceSdr: Boolean = false,
+        checkActive: () -> Unit = {},
     ): LibHeifDecodedImage {
         require(file.isFile) { "HEIF input must be a readable local file" }
         require(maxLongEdge > 0) { "maxLongEdge must be greater than 0" }
         val info = nativeInspectFile(file.absolutePath)?.toImageInfo()
             ?: throw LibHeifException("libheif returned no image information")
         val hasHdrTransfer = info.dynamicRange != HeifDynamicRange.SDR
+        if (hasHdrTransfer && !info.hasBt2020HdrEncoding) {
+            throw LibHeifException("Unsupported HDR color primaries")
+        }
         val canRenderHdr = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
-        val useHdrColorSpace = info.hasBt2020HdrEncoding && canRenderHdr
-        val useHighPrecision = info.bitDepth > 8 && (!hasHdrTransfer || useHdrColorSpace)
+        val useHdrColorSpace = info.hasBt2020HdrEncoding
+        val useHighPrecision = info.bitDepth > 8
         val targetSize = fitInside(info.width, info.height, maxLongEdge)
         val bitmap = Bitmap.createBitmap(
             targetSize.first,
@@ -177,21 +183,34 @@ class LibHeifNativeDecoder {
             check(nativeDecodeFile(file.absolutePath, bitmap, useHdrColorSpace)) {
                 "libheif returned no image"
             }
+            checkActive()
         } catch (error: Throwable) {
             bitmap.recycle()
             throw error
         }
+        val fallback = hasHdrTransfer && (!canRenderHdr || forceSdr)
+        val output = if (fallback) {
+            try { HdrToneMapper.map(bitmap, info.dynamicRange, checkActive) }
+            finally { bitmap.recycle() }
+        } else bitmap
         return LibHeifDecodedImage(
-            bitmap = bitmap,
+            bitmap = output,
             sourceInfo = info,
             usesHighPrecisionBitmap = useHighPrecision,
-            usesHdrColorSpace = useHdrColorSpace,
-            usedSdrFallback = hasHdrTransfer && !useHdrColorSpace,
+            usesHdrColorSpace = useHdrColorSpace && !fallback,
+            usedSdrFallback = fallback,
         )
     }
 
     private fun colorSpaceFor(info: LibHeifImageInfo, useHdrColorSpace: Boolean): ColorSpace {
         if (!useHdrColorSpace) return ColorSpace.get(ColorSpace.Named.SRGB)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // The temporary Bitmap is only read as encoded samples before CPU tone mapping.
+            return ColorSpace.Rgb("BT.2020 encoded ${info.dynamicRange}",
+                floatArrayOf(0.708f, 0.292f, 0.170f, 0.797f, 0.131f, 0.046f),
+                floatArrayOf(0.3127f, 0.3290f), DoubleUnaryOperator { it },
+                DoubleUnaryOperator { it }, 0f, 1f)
+        }
         return hdrColorSpace(info.dynamicRange)
     }
 

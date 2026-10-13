@@ -73,10 +73,14 @@ fun HdrComparisonScreen(
     val window = remember(context) { context.findActivity()?.window }
     val capability = rememberHdrDisplayCapability()
     val success = uiState as? HdrComparisonUiState.Success
-    var selectedMode by rememberSaveable { mutableStateOf(HdrComparisonMode.DEFAULT) }
+    var selectedMode by rememberSaveable { mutableStateOf(runCatching {
+        HdrComparisonMode.valueOf(context.findActivity()?.getPreferences(Context.MODE_PRIVATE)
+            ?.getString("hdr_mode", HdrComparisonMode.DEFAULT.name) ?: HdrComparisonMode.DEFAULT.name)
+    }.getOrDefault(HdrComparisonMode.DEFAULT)) }
 
-    LaunchedEffect(success?.image?.originalBitmap?.generationId) {
-        selectedMode = HdrComparisonMode.DEFAULT
+    LaunchedEffect(selectedMode) {
+        context.findActivity()?.getPreferences(Context.MODE_PRIVATE)?.edit()
+            ?.putString("hdr_mode", selectedMode.name)?.apply()
     }
 
     val presentation = success?.let { state ->
@@ -241,6 +245,27 @@ private fun HdrSuccessContent(
         )
         image.gainmapMetadata?.let { metadata ->
             GainmapMetadataCard(metadata)
+        }
+        image.gainmapPreview?.let { gainmap ->
+            Text(stringResource(R.string.hdr_gainmap_preview))
+            Image(gainmap.asImageBitmap(), stringResource(R.string.hdr_gainmap_preview),
+                Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 280.dp), contentScale = ContentScale.Fit)
+        }
+        image.luminance?.let { histogram ->
+            Text(stringResource(R.string.hdr_analysis_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.hdr_luminance_stats, histogram.maximum, histogram.mean, histogram.samples))
+            val color = MaterialTheme.colorScheme.primary
+            androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 140.dp)) {
+                val maximum = histogram.bins.maxOrNull()?.coerceAtLeast(1) ?: 1
+                val width = size.width / histogram.bins.size
+                histogram.bins.forEachIndexed { index, value ->
+                    val height = size.height * kotlin.math.ln(1f + value) / kotlin.math.ln(1f + maximum)
+                    drawRect(color, androidx.compose.ui.geometry.Offset(index * width, size.height - height),
+                        androidx.compose.ui.geometry.Size(width, height))
+                }
+            }
+            Text(stringResource(R.string.hdr_luminance_axis), style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.hdr_analysis_note), style = MaterialTheme.typography.bodySmall)
         }
         Text(
             text = stringResource(R.string.hdr_display_details_title),

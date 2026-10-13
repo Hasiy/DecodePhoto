@@ -20,12 +20,13 @@ class SystemPhotoDecoder(private val applicationContext: Context) {
     suspend fun decode(
         uri: android.net.Uri,
         format: PhotoFormat,
-        maxLongEdge: Int = DEFAULT_MAX_LONG_EDGE,
+        maxLongEdge: Int = PhotoMemoryPolicy.previewLongEdge(applicationContext),
     ): PhotoDecodeOutput =
         withContext(Dispatchers.IO) {
             require(!format.isRaw) { "System photo decoder does not accept RAW formats" }
             require(maxLongEdge > 0) { "maxLongEdge must be greater than 0" }
-            val cached = PhotoInputResolver.copyToCache(applicationContext, uri, format.suffix)
+            val input = PhotoInputResolver.acquire(applicationContext, uri, format.suffix)
+            val cached = input.file
             try {
                 val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     decodeWithImageDecoder(cached, maxLongEdge)
@@ -37,7 +38,7 @@ class SystemPhotoDecoder(private val applicationContext: Context) {
                     colorInfo = DecodedColorInfo.fromBitmap(bitmap),
                 )
             } finally {
-                PhotoInputResolver.deleteQuietly(cached)
+                input.close()
             }
         }
 

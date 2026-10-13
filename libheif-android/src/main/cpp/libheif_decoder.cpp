@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -525,5 +526,50 @@ Java_top_hasiy_libheif_LibHeifNativeDecoder_nativeDecodeFile(
         throwNative(env, "libheif returned an incompatible RGBA plane");
         return JNI_FALSE;
     }
+    return JNI_TRUE;
+}
+extern "C" JNIEXPORT jboolean JNICALL
+Java_top_hasiy_libheif_EncodedBitmapRows_nativeReadRow(
+    JNIEnv* env, jobject, jobject bitmap, jint y, jboolean premultiplied, jfloatArray target
+) {
+    AndroidBitmapInfo info{};
+    if (AndroidBitmap_getInfo(env, bitmap, &info) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        y < 0 || static_cast<std::uint32_t>(y) >= info.height ||
+        env->GetArrayLength(target) < static_cast<jsize>(info.width * 4U)) return JNI_FALSE;
+    if (info.format != ANDROID_BITMAP_FORMAT_RGBA_F16 &&
+        info.format != ANDROID_BITMAP_FORMAT_RGBA_8888 && info.format != ANDROID_BITMAP_FORMAT_A_8 &&
+        info.format != ANDROID_BITMAP_FORMAT_RGB_565) return JNI_FALSE;
+    void* pixels = nullptr;
+    if (AndroidBitmap_lockPixels(env, bitmap, &pixels) != ANDROID_BITMAP_RESULT_SUCCESS) return JNI_FALSE;
+    jfloat* values = env->GetFloatArrayElements(target, nullptr);
+    if (values == nullptr) { AndroidBitmap_unlockPixels(env, bitmap); return JNI_FALSE; }
+    const auto* row = static_cast<const std::uint8_t*>(pixels) + static_cast<size_t>(y) * info.stride;
+    auto halfToFloat = [](std::uint16_t half) -> float {
+        const int exponent = (half >> 10U) & 31U;
+        const int mantissa = half & 1023U;
+        const float sign = (half & 0x8000U) ? -1.0f : 1.0f;
+        if (exponent == 0) return sign * std::ldexp(static_cast<float>(mantissa), -24);
+        if (exponent == 31) return mantissa ? NAN : sign * INFINITY;
+        return sign * std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f, exponent - 15);
+    };
+    for (std::uint32_t x = 0; x < info.width; ++x) {
+        float* value = values + x * 4U;
+        if (info.format == ANDROID_BITMAP_FORMAT_RGBA_F16) {
+            const auto* pixel = reinterpret_cast<const std::uint16_t*>(row) + x * 4U;
+            for (int c = 0; c < 4; ++c) value[c] = halfToFloat(pixel[c]);
+        } else if (info.format == ANDROID_BITMAP_FORMAT_RGBA_8888) {
+            for (int c = 0; c < 4; ++c) value[c] = row[x * 4U + c] / 255.0f;
+        } else if (info.format == ANDROID_BITMAP_FORMAT_RGB_565) {
+            const auto pixel = reinterpret_cast<const std::uint16_t*>(row)[x];
+            value[0] = ((pixel >> 11U) & 31U) / 31.0f;
+            value[1] = ((pixel >> 5U) & 63U) / 63.0f;
+            value[2] = (pixel & 31U) / 31.0f; value[3] = 1.0f;
+        } else { value[0] = value[1] = value[2] = 0.0f; value[3] = row[x] / 255.0f; }
+        if (premultiplied == JNI_TRUE && value[3] > 0 && value[3] < 1) {
+            for (int c = 0; c < 3; ++c) value[c] /= value[3];
+        }
+    }
+    env->ReleaseFloatArrayElements(target, values, 0);
+    AndroidBitmap_unlockPixels(env, bitmap);
     return JNI_TRUE;
 }

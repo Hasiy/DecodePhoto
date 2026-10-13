@@ -18,7 +18,9 @@ class ProgressiveRawImageDecoder(
     private val libRawDecoder: LibRawDecoder,
 ) : RawImageDecoder {
 
-    override fun decode(uri: Uri, format: PhotoFormat): Flow<RawDecodeResult> = flow {
+    override fun decode(uri: Uri, format: PhotoFormat): Flow<RawDecodeResult> = decode(uri, format, RawRenderOptions())
+
+    fun decode(uri: Uri, format: PhotoFormat, options: RawRenderOptions): Flow<RawDecodeResult> = flow {
         try {
             embeddedPreviewDecoder.decode(uri)?.let { preview ->
                 emit(
@@ -37,7 +39,7 @@ class ProgressiveRawImageDecoder(
         try {
             emit(
                 RawDecodeResult.Success(
-                    bitmap = libRawDecoder.decode(uri, format),
+                        bitmap = libRawDecoder.decode(uri, format, options),
                     source = RawDecodeResult.Source.LIBRAW,
                 ),
             )

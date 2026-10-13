@@ -37,6 +37,8 @@ data class LiveVideoMetadata(
     val height: Int,
     val durationUs: Long,
     val hasAudio: Boolean,
+    val colorTransfer: String = "SDR/UNKNOWN",
+    val decoderSupportsFormat: Boolean = false,
 )
 
 data class LivePhotoAsset(

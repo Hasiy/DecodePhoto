@@ -55,8 +55,10 @@ HEIF/HEIC 的软件解码路径。
 | JPEG | Android 系统解码 | 普通照片或 Ultra HDR Gain Map 图片 |
 | AVIF | Android 系统支持时解码 | 当前系统可识别的静态图片结果 |
 
-RAW 推荐流程先显示内嵌 JPEG，再以 LibRaw 显影结果替换。HEIF/HEIC 自动模式优先
-使用系统解码，失败后再尝试 libheif。所有耗时解码都在后台执行。
+选图后自动解码，RAW 先显示内嵌 JPEG，再以 LibRaw 显影结果替换；完整显影失败或
+取消时保留预览。HEIF/HEIC 自动模式在 API 34+ 或探测到 HDR transfer 时优先 libheif，
+旧系统上的普通 SDR 图优先系统解码，失败后尝试另一条路径。元数据与照片解码独立执行，
+直方图在图片显示后后台补齐。
 
 ## 4. HDR / SDR 对比页面
 
@@ -82,11 +84,11 @@ Window 色彩模式由子页面生命周期管理：离开页面、加载新图�
 时恢复 `COLOR_MODE_DEFAULT`。由于色彩模式作用于整个 Window，页面采用同图模式切换，
 而不是在同一个 Window 中伪造三个拥有不同 HDR 状态的并排区域。
 
-当前已完成 Android Ultra HDR Gain Map 路径，以及 libheif 10/12-bit HEIF 的
-`RGBA_F16` 高精度输出与 BT.2020 HLG/PQ 色彩空间映射。没有 Gain Map 的 HLG/PQ
-静态图不会仅根据位深或扩展名判定为 HDR。旧系统上的确定性 HLG/PQ → SDR tone
-mapping、HDR 视频能力探测和 HDR 亮度直方图仍按
-[`hdr-sdr-complete-implementation.md`](hdr-sdr-complete-implementation.md)继续实施与验收。
+已实现 Ultra HDR Gain Map、libheif 10/12-bit `RGBA_F16` 输出和 BT.2020 HLG/PQ
+色彩空间映射。2026-10-13 增加旧系统 BT.2020 HLG/PQ 的 CPU SDR 映射、视频传递函数
+与系统解码能力探测、源像素线性亮度直方图及 Gain Map 可视化。非 BT.2020 HDR 原色
+在库路径中明确拒绝；AVIF 仍依赖系统解码器。数学测试与合成样本不能替代真实相机
+色彩和屏幕亮度验收，详见[增强说明](photo-viewer-enhancements.md)。
 
 ## 5. Live Photo 与 Motion Photo
 
@@ -122,9 +124,13 @@ mapping、HDR 视频能力探测和 HDR 亮度直方图仍按
 - native 解码限制为 160 MP、单边不超过 32768 px；
 - libheif 整图软件解码另有限制：8-bit 源图最多 96 MP，F16 源图最多 64 MP，单块分配上限 512 MiB、libheif 跟踪的总内存上限 768 MiB；这些限制不包含所有外部 codec 和 Android Bitmap 分配，不能替代真机峰值内存验收；
 - LibRaw 在 `unpack()` 前检查已知尺寸，并将 `max_raw_memory_mb` 限制为 512 MiB；
-- 常规照片主流程默认限制输出最长边为 4096 px；
+- 主流程按设备内存等级限制最长边为 2048 或 4096 px；LibRaw 在创建 Android Bitmap
+  前限制输出尺寸，内部 RAW/显影缓冲仍按传感器尺寸分配；
+- 共享输入缓存采用引用计数，最多保留两份空闲输入；取消复制会清理未完成文件；
+- LibRaw/libheif 的主要像素解码共用后台互斥预算，避免多个页面同时进行高峰值 native 解码；
 - HDR 对比页限制输出最长边为 2048 px，以控制原图和 SDR Base 同时存在时的内存；
-- 成功、失败和取消路径均清理可控的临时文件与 native 资源；
+- 未发布的中间 Bitmap、文件租约和 native 请求由失败/取消路径清理；已发布 Bitmap
+  可被查看、比较和导出共用，由 Android 在最后一个引用释放后回收，避免渲染器访问已 recycle 的图像；
 - 日志不记录 URI、真实路径、文件名、照片像素、EXIF 内容或 GPS 信息。
 
 ## 8. 构建与安装
@@ -155,7 +161,7 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## 9. 当前验证状态
 
-2026-10-08 的当前工作区验证结果：
+2026-10-08 的历史验证结果（不代表 2026-10-13 改动的验收）：
 
 - `testDebugUnitTest`：43 项测试通过，0 failure / error / skipped；
 - `lintDebug`：0 error；
@@ -171,6 +177,7 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 ## 10. 相关文档
 
 - [HDR / SDR 完整处理与后续实施方案](hdr-sdr-complete-implementation.md)
+- [2026-10-13 查看器增强及验证](photo-viewer-enhancements.md)
 - [Live Photo / Motion Photo 实现说明](live-photo-motion-photo-implementation.md)
 - [HEIF / HEIC 测试矩阵](heif-heic-test-matrix.md)
 - [DNG / RAF 解码方案](../android-dng-raf-decoding-guide.md)

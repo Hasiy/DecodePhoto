@@ -17,6 +17,12 @@ import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.hasiy.rawviewer.raw.ImageSizeCalculator
+import top.hasiy.rawviewer.raw.PhotoFormatResolver
+import top.hasiy.rawviewer.raw.SystemPhotoDecoder
+import top.hasiy.rawviewer.raw.LibHeifDecoder
+import top.hasiy.libheif.HeifDynamicRange
+import kotlinx.coroutines.CancellationException
+import android.util.Log
 
 class HdrComparisonDecoder(context: Context) {
 
@@ -33,11 +39,32 @@ class HdrComparisonDecoder(context: Context) {
      */
     suspend fun decode(uri: Uri): HdrComparisonImage = withContext(Dispatchers.IO) {
         ensureSafeInputSize(uri)
-        val original = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            decodeWithImageDecoder(uri)
-        } else {
-            decodeWithBitmapFactory(uri)
-        }
+        val format = PhotoFormatResolver(applicationContext).resolve(uri)
+            ?: throw HdrComparisonDecodeException(HdrComparisonError.UNSUPPORTED_IMAGE)
+        if (format.isRaw) throw HdrComparisonDecodeException(HdrComparisonError.UNSUPPORTED_IMAGE)
+        val original = if (format.isHeif) {
+            val library = LibHeifDecoder(applicationContext)
+            val preferLibrary = try {
+                library.inspect(uri, format).imageInfo.dynamicRange != HeifDynamicRange.SDR
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                Log.w("HdrComparisonDecoder", "HEIF inspection failed: ${error.javaClass.simpleName}")
+                false
+            }
+            try {
+                // SDR keeps the system's original ICC/P3 color space; PQ/HLG uses
+                // the high-precision library path before any SDR tone mapping.
+                if (preferLibrary) library.decode(uri, format, MAX_LONG_EDGE).bitmap
+                else SystemPhotoDecoder(applicationContext).decode(uri, format, MAX_LONG_EDGE).bitmap
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) {
+                Log.w("HdrComparisonDecoder", "HEIF fallback: ${error.javaClass.simpleName}")
+                if (preferLibrary) SystemPhotoDecoder(applicationContext).decode(uri, format, MAX_LONG_EDGE).bitmap
+                else library.decode(uri, format, MAX_LONG_EDGE).bitmap
+            }
+        } else SystemPhotoDecoder(applicationContext).decode(uri, format, MAX_LONG_EDGE).bitmap
+        var ownedSdr: Bitmap? = null
+        var ownedMap: Bitmap? = null
 
         try {
             val hasGainmap = Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
@@ -47,15 +74,18 @@ class HdrComparisonDecoder(context: Context) {
             val sdrBitmap = when (contentType) {
                 HdrContentType.ULTRA_HDR_GAINMAP -> {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                        createSdrBase(original)
+                        HdrBitmapTools.toSdr(original)
                     } else {
                         throw IOException("Gain map requires Android 14 or newer")
                     }
                 }
                 HdrContentType.HLG_10_BIT,
-                HdrContentType.PQ_10_BIT -> createSdrRendition(original)
+                HdrContentType.PQ_10_BIT -> HdrBitmapTools.toSdr(original)
                 HdrContentType.SDR_OR_UNIDENTIFIED -> original
             }
+            ownedSdr = sdrBitmap.takeIf { it !== original }
+            val luminance = HdrLuminanceAnalyzer.calculate(original)
+            ownedMap = HdrLuminanceAnalyzer.gainmapPreview(original)
             HdrComparisonImage(
                 originalBitmap = original,
                 sdrBitmap = sdrBitmap,
@@ -63,8 +93,12 @@ class HdrComparisonDecoder(context: Context) {
                 colorSpaceName = original.colorSpace?.name ?: UNKNOWN_VALUE,
                 bitmapConfigName = original.config?.name ?: UNKNOWN_VALUE,
                 gainmapMetadata = gainmapMetadata,
+                luminance = luminance,
+                gainmapPreview = ownedMap,
             )
         } catch (error: Throwable) {
+            ownedSdr?.recycle()
+            ownedMap?.recycle()
             original.recycle()
             throw error
         }
